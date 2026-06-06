@@ -205,6 +205,12 @@ if ($build -lt 17763) {
 }
 Write-Ok "Windows build $build"
 
+$is32BitWindows = -not [Environment]::Is64BitOperatingSystem
+if ($is32BitWindows) {
+    Write-Warn2 "Detected native 32-bit Windows. OpenJarvis will install in cloud-engine mode."
+    Write-Warn2 "  Ollama/local model install is skipped because the Windows Ollama installer is 64-bit only."
+}
+
 # ---------------------------------------------------------------------------
 # 2. Python check
 # ---------------------------------------------------------------------------
@@ -222,6 +228,15 @@ function Get-PythonCommand {
 Write-Info "Checking Python (3.10 - 3.13)..."
 $pythonExe = Get-PythonCommand
 if (-not $pythonExe) {
+    if ($is32BitWindows) {
+        Write-Fail @"
+Python 3.10 - 3.13 not found.
+
+On native 32-bit Windows, install 32-bit Python 3.10 - 3.13 manually from
+https://python.org and check 'Add python.exe to PATH' during install.
+Then re-run this installer.
+"@
+    }
     Write-Info "Python not on PATH — attempting auto-install via winget..."
     $pythonExe = Install-WithWinget -WingetId 'Python.Python.3.13' -CommandName 'python'
     if (-not $pythonExe) {
@@ -394,8 +409,13 @@ if ($openAiKeyCandidate) {
 # ---------------------------------------------------------------------------
 
 Write-Info "Checking Ollama..."
-$ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
-if (-not $ollamaExe) {
+$ollamaExe = $null
+if ($is32BitWindows) {
+    Write-Warn2 "Skipping Ollama on native 32-bit Windows; use a cloud engine or another remote backend."
+} else {
+    $ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
+}
+if (-not $is32BitWindows -and -not $ollamaExe) {
     Write-Info "  Ollama not on PATH — downloading the official installer (~150 MB)..."
     $ollamaSetup = Join-Path $env:TEMP 'OllamaSetup.exe'
     # SilentlyContinue is load-bearing in PS 5.1: the default progress
@@ -427,29 +447,33 @@ if (-not $ollamaExe) {
         Write-Fail "Ollama installer ran but 'ollama' isn't on PATH. Open a fresh PowerShell and re-run, or install manually from https://ollama.com."
     }
 }
-Write-Ok "Ollama ($ollamaExe)"
+if ($ollamaExe) {
+    Write-Ok "Ollama ($ollamaExe)"
+}
 
 # Make sure the daemon is actually responsive before pulling. The Ollama
 # Windows installer launches the tray app at install time, but on a re-
 # run with an existing install the daemon may not be running yet.
-Write-Info "Waiting for Ollama daemon..."
 $ollamaReady = $false
-for ($i = 0; $i -lt 60; $i++) {
-    & $ollamaExe list 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        $ollamaReady = $true
-        break
+if ($ollamaExe) {
+    Write-Info "Waiting for Ollama daemon..."
+    for ($i = 0; $i -lt 60; $i++) {
+        & $ollamaExe list 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $ollamaReady = $true
+            break
+        }
+        if ($i -eq 5) {
+            # Daemon clearly isn't auto-running — start it ourselves. Ollama
+            # for Windows uses the tray app `ollama app.exe`; falling back to
+            # `ollama serve` works headless.
+            Start-Process -FilePath $ollamaExe -ArgumentList 'serve' -WindowStyle Hidden -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 1
     }
-    if ($i -eq 5) {
-        # Daemon clearly isn't auto-running — start it ourselves. Ollama
-        # for Windows uses the tray app `ollama app.exe`; falling back to
-        # `ollama serve` works headless.
-        Start-Process -FilePath $ollamaExe -ArgumentList 'serve' -WindowStyle Hidden -ErrorAction SilentlyContinue
+    if (-not $ollamaReady) {
+        Write-Warn2 "Ollama daemon didn't become ready in 60s. Continuing — bg-orchestrator will retry later."
     }
-    Start-Sleep -Seconds 1
-}
-if (-not $ollamaReady) {
-    Write-Warn2 "Ollama daemon didn't become ready in 60s. Continuing — bg-orchestrator will retry later."
 }
 
 # ---------------------------------------------------------------------------
@@ -466,6 +490,8 @@ if ($ollamaReady) {
     } else {
         Write-Warn2 "ollama pull failed; the bg-orchestrator will retry once Ollama is reachable."
     }
+} elseif ($is32BitWindows) {
+    Write-Warn2 "Skipping model pull — local Ollama models are not installed on native 32-bit Windows."
 } else {
     Write-Warn2 "Skipping model pull — daemon wasn't ready."
 }
@@ -619,8 +645,13 @@ if ($openAiKeyImported) {
 if (-not $modelPullOk) {
     Write-Host ""
     Write-Host "  NOTE: the qwen3.5:2b model didn't finish downloading." -ForegroundColor Yellow
-    Write-Host "        Chat will fail until the bg-orchestrator finishes the retry."
-    Write-Host "        'jarvis doctor' shows progress."
+    if ($is32BitWindows) {
+        Write-Host "        Native 32-bit Windows skips Ollama/local models." -ForegroundColor Yellow
+        Write-Host "        Set OPENAI_API_KEY and use cloud mode, or run a remote model backend."
+    } else {
+        Write-Host "        Chat will fail until the bg-orchestrator finishes the retry."
+        Write-Host "        'jarvis doctor' shows progress."
+    }
 }
 
 if ($shouldInstallService) {

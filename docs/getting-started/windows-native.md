@@ -7,9 +7,9 @@ avoid a Linux VM; WSL2 remains the smoother experience for most users.
 
 ## What you get
 
-- A PowerShell installer that probes prerequisites, installs `uv`,
-  clones the repo, installs Ollama plus a starter model, and runs
-  `uv sync --extra server`.
+- A PowerShell installer plus `cmd.exe` batch wrappers that probe
+  prerequisites, install `uv`, clone the repo, install Ollama plus a starter
+  model on 64-bit Windows, and run `uv sync --extra server`.
 - An optional Windows scheduled-task service equivalent to the systemd
   unit and launchd plist.
 - A `start-jarvis.bat` helper in `%LOCALAPPDATA%\OpenJarvis` for manual
@@ -25,6 +25,9 @@ avoid a Linux VM; WSL2 remains the smoother experience for most users.
   see [#432](https://github.com/open-jarvis/OpenJarvis/issues/432)).
 - `git` on PATH.
 - ~5 GB free disk on `%LOCALAPPDATA%`.
+- Native 32-bit Windows can use the cloud-engine path, but local Ollama models
+  are skipped because the Windows Ollama installer is 64-bit only. Install
+  32-bit Python 3.10 - 3.13 manually before running the installer.
 
 ## Install
 
@@ -33,6 +36,16 @@ In any PowerShell:
 ```powershell
 irm https://open-jarvis.github.io/OpenJarvis/install.ps1 | iex
 ```
+
+In `cmd.exe`, use the batch downloader:
+
+```cmd
+curl -L -o downloader.bat https://open-jarvis.github.io/OpenJarvis/downloader.bat
+.\downloader.bat
+```
+
+In a cloned repo, the batch files are `deploy\windows\installer.bat` and
+`deploy\windows\downloader.bat`.
 
 The installer will:
 
@@ -43,7 +56,9 @@ The installer will:
    installer).
 5. Clone the repo to `%LOCALAPPDATA%\OpenJarvis\src`.
 6. Run `uv sync --extra server`.
-7. Install/start Ollama if needed and pull the `qwen3.5:2b` starter model.
+7. Install/start Ollama if needed and pull the `qwen3.5:2b` starter model
+   on 64-bit Windows; on native 32-bit Windows, skip Ollama and default the
+   starter batch to cloud mode.
 8. Offer to store an OpenAI API key for cloud models.
 9. Install `%LOCALAPPDATA%\OpenJarvis\start-jarvis.bat`.
 10. Prompt to register the scheduled-task service (skip with

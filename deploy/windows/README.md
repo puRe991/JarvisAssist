@@ -12,6 +12,20 @@ In an elevated-or-regular PowerShell:
 irm https://open-jarvis.github.io/OpenJarvis/install.ps1 | iex
 ```
 
+From `cmd.exe`, use the published batch downloader:
+
+```cmd
+curl -L -o downloader.bat https://open-jarvis.github.io/OpenJarvis/downloader.bat
+.\downloader.bat
+```
+
+If you already cloned the repository, the batch files are here:
+
+```cmd
+deploy\windows\installer.bat
+deploy\windows\downloader.bat
+```
+
 What it does:
 
 1. Refuses non-Windows hosts and Windows < 10 1809.
@@ -23,6 +37,8 @@ What it does:
 6. Runs `uv sync --extra server` so the FastAPI server entry point is
    importable.
 7. Installs/starts Ollama if needed and pulls the `qwen3.5:2b` starter model.
+   On native 32-bit Windows, skips Ollama because the Windows Ollama installer
+   is 64-bit only; the generated starter batch defaults to cloud mode instead.
 8. Optionally stores an OpenAI API key in `%USERPROFILE%\.openjarvis\cloud-keys.env`
    so cloud models are available without hard-coding secrets in scripts.
 9. Installs `%LOCALAPPDATA%\OpenJarvis\start-jarvis.bat` for one-click/manual startup.
@@ -53,6 +69,15 @@ The available env vars: `OPENJARVIS_SKIP_SERVICE`, `OPENJARVIS_SERVICE`,
 (`irm ... -OutFile install.ps1; .\install.ps1 -Force`).
 
 
+## Native 32-bit Windows behavior
+
+OpenJarvis can bootstrap on native 32-bit Windows, but local Ollama-backed
+models are not installed there because Ollama for Windows is 64-bit only.
+Install 32-bit Python 3.10 - 3.13 manually first, then run the installer. The
+starter batch defaults to `OPENJARVIS_ENGINE=cloud` and `OPENJARVIS_MODEL=gpt-4o-mini`
+on 32-bit Windows; set `OPENAI_API_KEY` or configure another remote backend
+before chatting.
+
 ## Manual start batch
 
 The installer copies a starter batch to:
@@ -62,7 +87,8 @@ The installer copies a starter batch to:
 ```
 
 Double-click it, or run it from `cmd.exe`. By default it starts the local
-Ollama-backed server on `http://127.0.0.1:8000` with `qwen3.5:2b`.
+Ollama-backed server on `http://127.0.0.1:8000` with `qwen3.5:2b` on 64-bit
+Windows. On native 32-bit Windows it defaults to cloud mode with `gpt-4o-mini`.
 Override startup without editing the file:
 
 ```cmd

@@ -32,6 +32,8 @@
       -SkipService    Don't prompt for / install the scheduled task.
       -Service        Install the scheduled task without prompting.
       -Force          Re-run all steps even if already done.
+      -SkipOpenAIKeyPrompt
+                      Don't prompt to store an OpenAI API key.
 
     Under `irm | iex` the param block is unreachable (Invoke-Expression
     can't pass named args into a piped script string), so the same knobs
@@ -39,6 +41,8 @@
       $env:OPENJARVIS_SKIP_SERVICE = '1'
       $env:OPENJARVIS_SERVICE      = '1'
       $env:OPENJARVIS_FORCE        = '1'
+      $env:OPENJARVIS_SKIP_OPENAI_KEY_PROMPT = '1'
+      $env:OPENJARVIS_OPENAI_API_KEY = 'sk-...'  # non-interactive key import
 
 .NOTES
     Loopback default: the scheduled-task service binds 127.0.0.1, so no
@@ -52,7 +56,8 @@
 param(
     [switch] $SkipService,
     [switch] $Service,
-    [switch] $Force
+    [switch] $Force,
+    [switch] $SkipOpenAIKeyPrompt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +68,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $SkipService -and $env:OPENJARVIS_SKIP_SERVICE) { $SkipService = $true }
 if (-not $Service     -and $env:OPENJARVIS_SERVICE)      { $Service     = $true }
 if (-not $Force       -and $env:OPENJARVIS_FORCE)        { $Force       = $true }
+if (-not $SkipOpenAIKeyPrompt -and $env:OPENJARVIS_SKIP_OPENAI_KEY_PROMPT) { $SkipOpenAIKeyPrompt = $true }
 
 # ---------------------------------------------------------------------------
 # Output helpers — coloured but plain enough for Constrained Language Mode.
@@ -122,6 +128,65 @@ function Install-WithWinget {
     $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $null
+}
+
+function Protect-CloudKeysFile {
+    param([string] $Path)
+    if (-not (Test-Path $Path)) { return }
+    # Best-effort Windows ACL hardening. Do not fail installation on locked-down
+    # images where icacls is unavailable or group names are localized.
+    try {
+        & icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1 | Out-Null
+    } catch {
+        Write-Warn2 "Could not tighten ACL on $Path: $($_.Exception.Message)"
+    }
+}
+
+function Save-CloudKey {
+    param(
+        [string] $KeyName,
+        [string] $KeyValue
+    )
+    if (-not $KeyName -or -not $KeyValue) { return $false }
+
+    $cloudDir = Join-Path $env:USERPROFILE '.openjarvis'
+    $keysPath = Join-Path $cloudDir 'cloud-keys.env'
+    if (-not (Test-Path $cloudDir)) {
+        New-Item -ItemType Directory -Path $cloudDir | Out-Null
+    }
+
+    $keys = [ordered]@{}
+    if (Test-Path $keysPath) {
+        foreach ($raw in Get-Content -Path $keysPath) {
+            $line = $raw.Trim()
+            if (-not $line -or $line.StartsWith('#') -or -not $line.Contains('=')) { continue }
+            $name, $value = $line.Split('=', 2)
+            $name = $name.Trim()
+            if ($name) { $keys[$name] = $value.Trim() }
+        }
+    }
+    $keys[$KeyName] = $KeyValue.Trim()
+
+    $content = ($keys.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`n"
+    Set-Content -Path $keysPath -Value ($content + "`n") -Encoding ASCII
+    Protect-CloudKeysFile -Path $keysPath
+    [System.Environment]::SetEnvironmentVariable($KeyName, $KeyValue.Trim(), 'User')
+    Set-Item -Path "Env:$KeyName" -Value ($KeyValue.Trim())
+    return $true
+}
+
+function Read-SecretText {
+    param([string] $Prompt)
+    $secure = Read-Host $Prompt -AsSecureString
+    if ($secure.Length -eq 0) { return '' }
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -295,7 +360,37 @@ try {
 Write-Ok "Dependencies installed"
 
 # ---------------------------------------------------------------------------
-# 7. Ollama — install + start + wait for daemon
+# 7. Optional OpenAI API key import
+# ---------------------------------------------------------------------------
+
+$openAiKeyImported = $false
+$openAiKeyCandidate = if ($env:OPENJARVIS_OPENAI_API_KEY) { $env:OPENJARVIS_OPENAI_API_KEY } else { $env:OPENAI_API_KEY }
+if ($openAiKeyCandidate) {
+    if (Save-CloudKey -KeyName 'OPENAI_API_KEY' -KeyValue $openAiKeyCandidate) {
+        $openAiKeyImported = $true
+        Write-Ok "OpenAI API key stored in %USERPROFILE%\.openjarvis\cloud-keys.env"
+    }
+} elseif (-not $SkipOpenAIKeyPrompt) {
+    $isInteractiveForKey = [Environment]::UserInteractive `
+        -and -not [System.Console]::IsInputRedirected
+    if ($isInteractiveForKey) {
+        $reply = Read-Host "Optional: store an OpenAI API key for cloud models now? [y/N]"
+        if ($reply -match '^[yY]') {
+            $secret = Read-SecretText "Paste OPENAI_API_KEY (input hidden)"
+            if ($secret) {
+                if (Save-CloudKey -KeyName 'OPENAI_API_KEY' -KeyValue $secret) {
+                    $openAiKeyImported = $true
+                    Write-Ok "OpenAI API key stored in %USERPROFILE%\.openjarvis\cloud-keys.env"
+                }
+            } else {
+                Write-Warn2 "No key entered — skipping OpenAI setup."
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 8. Ollama — install + start + wait for daemon
 # ---------------------------------------------------------------------------
 
 Write-Info "Checking Ollama..."
@@ -358,7 +453,7 @@ if (-not $ollamaReady) {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Pull a starter model (qwen3.5:2b — ~1.5 GB)
+# 9. Pull a starter model (qwen3.5:2b — ~1.5 GB)
 # ---------------------------------------------------------------------------
 
 $modelPullOk = $false
@@ -376,7 +471,7 @@ if ($ollamaReady) {
 }
 
 # ---------------------------------------------------------------------------
-# 9. jarvis.cmd shim — so bare `jarvis` works in any new PowerShell
+# 10. jarvis.cmd shim — so bare `jarvis` works in any new PowerShell
 # ---------------------------------------------------------------------------
 
 $binDir = Join-Path $installRoot 'bin'
@@ -423,8 +518,16 @@ if (-not $pathOnUser) {
 }
 Write-Ok "jarvis shim installed at $shimPath"
 
+$startBatPath = Join-Path $installRoot 'start-jarvis.bat'
+$startBatTemplate = Join-Path $srcDir 'deploy\windows\start-jarvis.bat'
+if (-not (Test-Path $startBatTemplate)) {
+    Write-Fail "Starter batch template not found at $startBatTemplate (the clone may be missing files; try -Force)."
+}
+Copy-Item -Path $startBatTemplate -Destination $startBatPath -Force
+Write-Ok "starter batch installed at $startBatPath"
+
 # ---------------------------------------------------------------------------
-# 10. Optional: register the scheduled-task service
+# 11. Optional: register the scheduled-task service
 # ---------------------------------------------------------------------------
 
 $serviceScript = Join-Path $srcDir 'deploy\windows\jarvis-service.ps1'
@@ -483,7 +586,7 @@ if ($shouldInstallService) {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Final message
+# 12. Final message
 # ---------------------------------------------------------------------------
 
 Write-Host ""
@@ -492,6 +595,7 @@ Write-Host "  │   OpenJarvis install complete    │" -ForegroundColor Green
 Write-Host "  └──────────────────────────────────┘" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Repo:    $srcDir"
+Write-Host "  Batch:   $startBatPath"
 
 # Tell the truth about what the user can run next, given (a) whether the
 # starter model finished pulling and (b) whether the User-PATH update
@@ -505,6 +609,11 @@ if ($pathNeedsRefresh) {
     Write-Host "            current PowerShell won't see it until restart)"
 } else {
     Write-Host "  Run it:  $nextCmd"
+}
+
+if ($openAiKeyImported) {
+    Write-Host "  OpenAI:  key stored; run cloud mode with:"
+    Write-Host "           set OPENJARVIS_ENGINE=cloud && set OPENJARVIS_MODEL=gpt-4o-mini && `"$startBatPath`""
 }
 
 if (-not $modelPullOk) {

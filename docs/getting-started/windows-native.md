@@ -8,11 +8,15 @@ avoid a Linux VM; WSL2 remains the smoother experience for most users.
 ## What you get
 
 - A PowerShell installer that probes prerequisites, installs `uv`,
-  clones the repo, and runs `uv sync --extra server`.
+  clones the repo, installs Ollama plus a starter model, and runs
+  `uv sync --extra server`.
 - An optional Windows scheduled-task service equivalent to the systemd
   unit and launchd plist.
-- Loopback default — the service binds `127.0.0.1` so no API key is
-  required.
+- A `start-jarvis.bat` helper in `%LOCALAPPDATA%\OpenJarvis` for manual
+  startup without remembering `uv` commands.
+- Optional OpenAI API-key import into `%USERPROFILE%\.openjarvis\cloud-keys.env`.
+- Loopback default — the service binds `127.0.0.1` so no OpenJarvis server API
+  key is required.
 
 ## What you need
 
@@ -39,7 +43,10 @@ The installer will:
    installer).
 5. Clone the repo to `%LOCALAPPDATA%\OpenJarvis\src`.
 6. Run `uv sync --extra server`.
-7. Prompt to register the scheduled-task service (skip with
+7. Install/start Ollama if needed and pull the `qwen3.5:2b` starter model.
+8. Offer to store an OpenAI API key for cloud models.
+9. Install `%LOCALAPPDATA%\OpenJarvis\start-jarvis.bat`.
+10. Prompt to register the scheduled-task service (skip with
    `-SkipService`).
 
 ## Run it
@@ -47,6 +54,21 @@ The installer will:
 ```powershell
 cd "$env:LOCALAPPDATA\OpenJarvis\src"
 uv run jarvis serve
+```
+
+Or use the generated batch:
+
+```cmd
+%LOCALAPPDATA%\OpenJarvis\start-jarvis.bat
+```
+
+To use OpenAI from the batch, store `OPENAI_API_KEY` during install or in the
+Cloud Models tab, then run:
+
+```cmd
+set OPENJARVIS_ENGINE=cloud
+set OPENJARVIS_MODEL=gpt-4o-mini
+%LOCALAPPDATA%\OpenJarvis\start-jarvis.bat
 ```
 
 Open `http://127.0.0.1:8000/health` to verify.

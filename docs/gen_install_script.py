@@ -4,6 +4,8 @@ Serves the installers at::
 
     https://open-jarvis.github.io/OpenJarvis/install.sh   (Linux / macOS / WSL2)
     https://open-jarvis.github.io/OpenJarvis/install.ps1  (native Windows)
+    https://open-jarvis.github.io/OpenJarvis/installer.bat (native Windows cmd)
+    https://open-jarvis.github.io/OpenJarvis/downloader.bat (native Windows cmd)
 
 so users have an HTTPS-valid, project-controlled install URL that does not
 depend on the externally-hosted ``openjarvis.ai`` domain — whose TLS config
@@ -23,6 +25,8 @@ import mkdocs_gen_files
 _SCRIPTS = [
     (Path("scripts/install/install.sh"), "install.sh"),
     (Path("deploy/windows/install.ps1"), "install.ps1"),
+    (Path("deploy/windows/installer.bat"), "installer.bat"),
+    (Path("deploy/windows/downloader.bat"), "downloader.bat"),
 ]
 
 for src, dest in _SCRIPTS:
